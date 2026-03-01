@@ -1,0 +1,139 @@
+# 浏览器和网页配置（示例）
+browser:
+  baidu_url: 'https://www.baidu.com/'
+  tel_number: '13800138000'
+  tel_name: '联系人姓名'
+  enable_otp: false
+  chrome_options:
+    no_imgs: false
+    headless: false
+    auto_port: true
+    user_data_dir: 'C:\\Users\\<用户名>\\AppData\\Local\\Microsoft\\Edge\\User Data'
+    profile_directory: 'Default'
+    browser_path: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+
+# 交互文本模板
+interaction_templates:
+  titles:
+    - '医生'
+    - '护士'
+    - '主任'
+    - '医师'
+    - '院长'
+    - '专家'
+    - '老师'
+    - '同志'
+    - '大夫'
+
+  relatives:
+    - '我的外公'
+    - '我的外婆'
+    - '我的父亲'
+    - '我的母亲'
+    - '我的哥哥'
+    - '我的姐姐'
+    - '我的弟弟'
+    - '我的妹妹'
+    - '我的表兄弟'
+    - '我的表姐妹'
+    - '我的堂兄弟'
+    - '我的堂姐妹'
+    - '我老婆'
+    - '我丈夫'
+    - '我妻子'
+    - '我的妻子'
+    - '我自己'
+    - '我本人'
+    - '我大姨'
+    - '我小姨'
+    - '我的大姑子'
+    - '我的小姑子'
+    - '我的大舅子'
+    - '我的小舅子'
+
+  situations:
+    - '有一些毛病'
+    - '需要帮助'
+    - '需要您的帮助'
+    - '需要医疗建议'
+    - '需要治疗'
+    - '需要详细咨询'
+    - '有紧急情况'
+    - '需要进行检查'
+    - '需要手术治疗'
+    - '生病了'
+    - '情况不太好'
+    - '需要紧急救治'
+    - '需要安排手术'
+    - '需要进一步诊断'
+
+  contact_methods:
+    - '我急需帮助，请尽快联系我 {number}'
+    - '有事想咨询你，麻烦联系我 {number}'
+    - '情况紧急，请求帮助，请立即拨打 {number}'
+    - '需要紧急救助，请马上联系我 {number}'
+    - '病情急需处理，请尽快联系 {number}'
+    - '需要安排紧急手术，请与我联系 {number}'
+    - '有重要情况需要咨询，请拨打 {number} 联系我'
+    - '我有紧急问题，希望能与你通话 {number}'
+    - '请尽快与我联系，电话号码是 {number}'
+    - '通过 {number} 联系我'
+    - '请联系 {number}'
+    - '可以通过 {number} 找到我'
+    - '请拨打 {number}'
+    - '有急事，请立即拨打 {number}'
+    - '需要紧急帮助，请马上拨打 {number}'
+    - '需要紧急医疗服务，请联系 {number}'
+    - '有重要事项需要沟通，请拨打 {number}'
+    - '需要迅速安排治疗，请联系 {number}'
+    - '请随时与我联系，电话号码是 {number}'
+    - '联系方式 {number}'
+
+  greetings:
+    - '您好'
+    - '你好'
+    - 'hello'
+    - 'hi'
+    - 'HI'
+    - 'Hello'
+    - '早上好'
+    - '下午好'
+    - '晚上好'
+    - 'Hi there'
+    - 'Hey'
+
+# 对话模式配置
+dialogue_mode:
+  # 可选模式：template（模板）, ai（AI生成）, hybrid（混合模式）
+  mode: 'ai'
+
+  # AI对话配置（仅在 mode 为 'ai' 或 'hybrid' 时生效）
+  ai_config:
+    provider: 'custom'
+    base_url: 'https://your-api-host.example.com'
+    api_key: 'YOUR_API_KEY_HERE'
+    model: 'your-model-name'
+
+    prompt_template: |
+      你是一个对话生成助手，刚刚进入“{hospital_name}”的主页聊天界面，作为访客准备开始咨询，并看到对方自动发出以下的欢迎消息（对话上下文）：
+      ```
+      {chat_context}
+      ```
+      你的任务是按以下模板生成第一条简洁、得体的咨询消息，你的输出必须只能是生成的消息本身，严禁添加任何解释、建议、示例或格式符号等！
+
+      输出模板：[问候语][称谓]，[人物][情况简述]，[联系方式]。
+
+      要求：
+      - 使用随机、礼貌的问候语及称谓；语气看起来真诚、自然。
+      - 简要描述与本人或随机一位家属的紧急情况，具体细节不便打字在此交流。
+      - 提供联系方式 {tel_number} {tel_name}，体现出希望通过电话沟通的紧迫需求。
+      - 针对该机构的专业特点调整措辞内容，并且需要自然地承接前面的“对话上下文”(如果存在)。
+
+    # API 请求参数配置
+    request_params:
+      max_tokens: 3000
+      temperature: 0.7
+      top_p: 1.0
+      frequency_penalty: 0.5
+      presence_penalty: 0.5
+      reasoning: false
