@@ -1,7 +1,7 @@
 import time, random, yaml, requests, logging, re, os, signal, threading
 from datetime import datetime
 from collections import Counter
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from fake_useragent import UserAgent
 from concurrent.futures import ThreadPoolExecutor
 from DrissionPage import ChromiumPage, ChromiumOptions
@@ -76,22 +76,35 @@ greetings = config['interaction_templates']['greetings'] # 更丰富的打招呼
 
 DEDUP_CONFIG = config.get('deduplication', {})
 ENABLE_LINK_DEDUP = DEDUP_CONFIG.get('enable_link_dedup', True)
-ENABLE_INSTITUTION_DEDUP = DEDUP_CONFIG.get('enable_institution_dedup', True)
+ENABLE_INSTITUTION_DEDUP = DEDUP_CONFIG.get('enable_institution_dedup', False)
+ENABLE_TITLE_DEDUP = DEDUP_CONFIG.get('enable_title_dedup', True)
 SHOW_DUPLICATE_EXAMPLES = max(0, int(DEDUP_CONFIG.get('show_duplicate_examples', 3)))
 
 
 def extract_institution_key(url: str) -> str:
     """
-    提取机构去重键，优先使用 ada 机构短码（/site/<org>/）
+    提取机构去重键，优先使用 imid，其次使用 ada 机构短码（/site/<org>/）
     """
     clean_url = (url or '').strip()
     if not clean_url:
         return ''
 
+    # 1. 优先尝试提取 imid
+    try:
+        parsed = urlparse(clean_url)
+        qs = parse_qs(parsed.query)
+        imid_list = qs.get('imid')
+        if imid_list and imid_list[0]:
+            return f"imid:{imid_list[0]}"
+    except Exception:
+        pass
+
+    # 2. 其次尝试提取 ada 站点 ID
     match = re.search(r'ada\.baidu\.com/site/([^/\s]+)/', clean_url, re.IGNORECASE)
     if match:
         return f"ada_site:{match.group(1).lower()}"
 
+    # 3. 最后降级到用域名/路径
     parsed = urlparse(clean_url)
     host = (parsed.netloc or '').lower()
     first_segment = ''
@@ -290,6 +303,7 @@ def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
     """
     tab = None
     tab_title = None
+    sent_message = False
     try:
         if STOP_EVENT.is_set():
             return
@@ -301,58 +315,71 @@ def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
         if STOP_EVENT.is_set():
             return
         tab_title = tab.title
-        
+
         # 检测机构聊天界面上下文
         # 使用合并的CSS选择器，避免顺序查找导致的超时等待
         context_element = tab.ele('css:div.pc-component-chatview-wrapper, div.component-chatview-wrapper', timeout=2)
-        
+
         context = ""
         if context_element:
             # 显式转换为字符串以避免静态分析错误
             context = str(context_element.text).strip()
-            
+
         logger.debug(context)
         # 将上下文信息整合
-        full_context = {'title':tab_title, 'context':context}
+        full_context = {'title': tab_title, 'context': context}
         # full_context = f"{tab_title}\n上下文：{context}" if context else tab_title
 
         # 合并输入框选择器
         component_input = tab.ele('css:.imlp-component-newtypebox-textarea, .imlp-component-typebox-input', timeout=5)
-        
-        if component_input and success_counter[tab_title]==0:
-            # 使用消息生成函数
-            start_gen_time = time.time()
-            template = generate_message(config, full_context)
-            logger.info(f"生成消息耗时: {time.time() - start_gen_time:.2f}s\n{template}")
-            if STOP_EVENT.is_set():
-                return
-            component_input.input(template)
-            # 合并发送按钮选择器
-            send = tab.ele('css:.imlp-component-newtypebox-send, .imlp-component-typebox-send-btn', timeout=5)
-            
-            if send:
-                try:
-                    # 优先尝试普通点击，如果失败则回退
-                    send.click()
-                    time.sleep(1) # 等待发送完成
-                except Exception as e:
-                    logger.warning(f"点击发送按钮失败，尝试JS点击: {e}")
-                    try:
-                        send.run_js('this.click()')
-                        time.sleep(1) # 等待发送完成
-                    except Exception as e2:
-                        logger.error(f"JS点击也失败: {e2}")
-        else:
-            logger.info(f'跳过重复机构或未找到输入框')
+
+        if not component_input:
+            logger.info('跳过：未找到输入框 | 标题:%s | url:%s', tab_title, url)
+            return
+
+        if ENABLE_TITLE_DEDUP and tab_title and success_counter[tab_title] > 0:
+            logger.info('跳过：命中重复标题:%s | 已留言次数:%s | url:%s', tab_title, success_counter[tab_title], url)
+            return
+
+        # 使用消息生成函数
+        start_gen_time = time.time()
+        template = generate_message(config, full_context)
+        logger.info(f"生成消息耗时: {time.time() - start_gen_time:.2f}s\n{template}")
+        if STOP_EVENT.is_set():
+            return
+
+        component_input.input(template)
+
+        # 合并发送按钮选择器
+        send = tab.ele('css:.imlp-component-newtypebox-send, .imlp-component-typebox-send-btn', timeout=5)
+
+        if not send:
+            logger.warning('未找到发送按钮，无法发送 | 标题:%s | url:%s', tab_title, url)
+            return
+
+        try:
+            # 优先尝试普通点击，如果失败则回退
+            send.click()
+            time.sleep(1)  # 等待发送完成
+            sent_message = True
+        except Exception as e:
+            logger.warning(f"点击发送按钮失败，尝试JS点击: {e}")
+            try:
+                send.run_js('this.click()')
+                time.sleep(1)  # 等待发送完成
+                sent_message = True
+            except Exception as e2:
+                logger.error(f"JS点击也失败: {e2}")
+
     except Exception as e:
         logger.error(f"发生错误: {e}")
     finally:
         if tab:
             time.sleep(2)  # 增加延迟，确保消息发送成功
             page.close_tabs(tabs_or_ids=tab)
-            if tab_title:
+            if tab_title and sent_message:
                 success_counter.update([tab_title])
-                logger.info(f"已留言数量, {len(success_counter)}/{total_len}, 标题:{tab_title}, url: {url}\n")
+                logger.info(f"已留言, {len(success_counter)}/{total_len}, 标题:{tab_title}, url: {url}\n")
 
 def iterate_api(file_path):
     """
@@ -365,8 +392,16 @@ def iterate_api(file_path):
     :param file_path: API文件路径
     """
 
-    # page = ChromiumPage(addr_or_opts=co)
-    page = ChromiumPage(addr_or_opts='127.0.0.1:9222')
+    # 尝试接管已启动的浏览器（端口9222），若失败则启动新浏览器实例
+    try:
+        page = ChromiumPage(addr_or_opts='127.0.0.1:9222')
+        # 简单验证连接状态（获取当前URL或标题，若未连接成功通常会抛出异常）
+        _ = page.title
+        logger.info("成功接管已启动的浏览器 (127.0.0.1:9222)")
+    except Exception as e:
+        logger.info(f"未检测到已启动的浏览器 (127.0.0.1:9222)，正在启动新实例... ({e})")
+        page = ChromiumPage(addr_or_opts=co)
+
     try:
         page.get(BAIDU_URL)
         page.wait.load_start(timeout=5, raise_err=False)

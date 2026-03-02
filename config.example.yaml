@@ -102,6 +102,16 @@ interaction_templates:
     - 'Hi there'
     - 'Hey'
 
+# 去重参数配置
+# 说明：
+# - enable_link_dedup / enable_institution_dedup：启动阶段对 api.txt 做预处理去重
+# - enable_title_dedup：运行时按页面标题去重（同标题只留言一次）
+deduplication:
+  enable_link_dedup: true
+  enable_institution_dedup: false
+  enable_title_dedup: false
+  show_duplicate_examples: 3
+
 # 对话模式配置
 dialogue_mode:
   # 可选模式：template（模板）, ai（AI生成）, hybrid（混合模式）
