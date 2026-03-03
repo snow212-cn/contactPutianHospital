@@ -413,8 +413,7 @@ def iterate_api(file_path):
         raise
 
     urls = prepare_target_urls(raw_urls)
-    total_len = len(urls)
-    if total_len == 0:
+    if len(urls) == 0:
         logger.warning('未读取到可用链接，流程结束')
         return
 
@@ -439,6 +438,7 @@ def iterate_api(file_path):
 
     # 保留随机性：只对“剩余链接”随机打乱
     random.shuffle(remaining_urls)
+    total_len = len(remaining_urls)
     success_counter = Counter()
 
     logger.info("运行中可在终端按 Ctrl+C 或按键 'q' 请求停止（通常在当前链接处理结束后生效）")
