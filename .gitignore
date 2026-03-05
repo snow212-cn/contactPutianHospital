@@ -167,3 +167,5 @@ logs/*.log
 .idea/
 *.code-workspace
 visited_urls.txt
+catchad/done_keywords.txt
+bing_probe.py
