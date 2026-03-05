@@ -5,9 +5,9 @@ import time
 import random
 import os
 import requests
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, unquote
 from fake_useragent import UserAgent
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import threading
 
 try:
@@ -50,17 +50,23 @@ def headers():
     }
 
 
-def baidu_search_headers():
-    """百度搜索专用请求头，固定桌面 UA，尽量命中 PC 结果页。"""
-    desktop_uas = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    ]
+DESKTOP_UAS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+]
+
+
+def baidu_search_headers(user_agent: str | None = None):
+    """百度搜索专用请求头，固定桌面 UA，尽量命中 PC 结果页。
+
+    注意：同一个 session/keyword 内，建议传入固定的 user_agent，避免每次请求 UA 都变化导致更容易触发风控。
+    """
+    ua = user_agent or random.choice(DESKTOP_UAS)
     return {
-        "User-Agent": random.choice(desktop_uas),
+        "User-Agent": ua,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,"
                   "image/apng,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -102,6 +108,47 @@ def normalize_baidu_candidate_link(url):
         return ''
 
     return u
+
+
+def baidu_candidate_fingerprint(link: str, prefix_len: int = 16) -> str:
+    """对 baidu.php?url= 候选链接做“早期指纹”，用于在解析跳转前快速去重。
+
+    背景：同一广告在页面内可能以多个位置/标签出现，且 baidu.php?url= 参数会携带不同追踪片段，
+    造成候选链接看起来不同但最终落地页相同。
+
+    策略：提取 query 里的 url=token，对 token URLDecode 后取前 N 位作为指纹（可配置）。
+    """
+    u = (link or '').strip()
+    if not u:
+        return ''
+
+    u = normalize_baidu_candidate_link(u) or u
+
+    try:
+        parsed = urlparse(u)
+        qs = parse_qs(parsed.query or '')
+        token = (qs.get('url') or [''])[0] or ''
+        token = unquote(token)
+    except Exception:
+        m = re.search(r'[?&]url=([^&]+)', u)
+        token = unquote(m.group(1)) if m else ''
+
+    token = (token or '').strip()
+    if not token:
+        return ''
+
+    # 尽量稳定：仅保留常见 token 字符集，避免因编码差异导致指纹抖动
+    safe = re.sub(r'[^A-Za-z0-9_\-]+', '', token)
+    if not safe:
+        safe = token
+
+    try:
+        n = int(prefix_len)
+    except Exception:
+        n = 16
+    n = max(4, min(128, n))
+
+    return safe[:n]
 
 
 def proxies():
@@ -177,13 +224,25 @@ def load_scrape_config(project_root: str) -> dict:
     defaults = {
         'max_workers': 1,
         'max_page': 2,
+        # 每页“唯一广告”的目标数量（按 imid 去重后计数）。
+        # 说明：百度结果页里可能出现大量看起来不同的 baidu.php?url=，但实际打开是同一广告。
+        # 这里用“解析后的 imid 去重”来避免这些重复链接占用 candidate_links_limit 配额。
         'candidate_links_limit': 10,
+        # 早期去重固定启用（不需要手动配置），仅保留前缀长度可调。
+        'candidate_fingerprint_prefix_len': 16,
         'delay_per_keyword_range': (1.0, 3.0),
         'delay_between_pages_range': (0.8, 2.0),
         'delay_between_resolves_range': (0.2, 0.8),
         'resume_enabled': True,
         'resume_file': os.path.join(project_root, 'catchad', 'done_keywords.txt'),
         'api_file': os.path.join(project_root, 'api.txt'),
+        # requests 超时：支持 YAML 里写成 [connect, read]
+        'request_timeout': (5, 10),
+        # 命中风控页后的动作：目前实现 stop（全局停止并取消后续 keyword）
+        'risk_control_action': 'stop',
+        # 兼容旧配置：如果用户已有该字段则生效；否则不设上限。
+        # 每页最多扫描多少条候选跳转链接（None 表示不设上限）
+        'candidate_links_scan_limit': None,
     }
 
     if yaml is None:
@@ -257,8 +316,17 @@ def extract_baidu_result_links(html):
     return unique_links
 
 
-def resolve_baidu_link(baidu_link, stop_event, session: requests.Session | None = None):
-    """打开百度跳转链接，拿到真实落地页 URL（尽量复用 session cookie）。"""
+def resolve_baidu_link(
+    baidu_link,
+    stop_event,
+    session: requests.Session | None = None,
+    user_agent: str | None = None,
+    timeout=(5, 10),
+):
+    """打开百度跳转链接，拿到真实落地页 URL（尽量复用 session cookie）。
+
+    若在跳转过程中命中风控页，会设置 stop_event 触发全局停止，避免继续无意义访问。
+    """
     if stop_event.is_set():
         return None
 
@@ -267,11 +335,21 @@ def resolve_baidu_link(baidu_link, stop_event, session: requests.Session | None 
     try:
         resp = client.get(
             baidu_link,
-            headers=baidu_search_headers(),
+            headers=baidu_search_headers(user_agent=user_agent),
             proxies=proxies(),
-            timeout=(5, 10),
+            timeout=timeout,
             allow_redirects=True,
         )
+
+        # 风控页常见跳转域名（兜底）
+        if 'wappass.baidu.com' in (resp.url or ''):
+            stop_event.set()
+            return None
+
+        if is_baidu_security_verify_page(resp.text):
+            stop_event.set()
+            return None
+
         final_url = (resp.url or '').strip()
         if 'ada.baidu.com' in final_url and 'imid=' in final_url:
             return final_url
@@ -299,6 +377,19 @@ def fetch(keyword, stop_event, cfg: dict):
     if stop_event.is_set():
         return []
 
+    # 统一本 keyword 的 UA，避免一次 keyword 内指纹频繁变化
+    ua = random.choice(DESKTOP_UAS)
+
+    # requests timeout：支持 [connect, read]
+    timeout = cfg.get('request_timeout') or (5, 10)
+    try:
+        if isinstance(timeout, (list, tuple)) and len(timeout) == 2:
+            timeout = (float(timeout[0]), float(timeout[1]))
+        else:
+            timeout = (5, 10)
+    except Exception:
+        timeout = (5, 10)
+
     max_page = int(cfg.get('max_page', 2) or 2)
     search_url = 'https://www.baidu.com/s'
     results = []
@@ -311,9 +402,9 @@ def fetch(keyword, stop_event, cfg: dict):
         try:
             s.get(
                 'https://www.baidu.com/',
-                headers=baidu_search_headers(),
+                headers=baidu_search_headers(user_agent=ua),
                 proxies=proxies(),
-                timeout=(5, 10),
+                timeout=timeout,
                 allow_redirects=True,
             )
         except Exception:
@@ -336,27 +427,66 @@ def fetch(keyword, stop_event, cfg: dict):
                     'rsv_dl': 'pc',
                 },
                 headers={
-                    **baidu_search_headers(),
+                    **baidu_search_headers(user_agent=ua),
                     'Referer': 'https://www.baidu.com/',
                 },
                 proxies=proxies(),
-                timeout=(5, 10),
+                timeout=timeout,
                 allow_redirects=True,
             )
 
-            if is_baidu_security_verify_page(response.text):
+            if ('wappass.baidu.com' in (response.url or '')) or is_baidu_security_verify_page(response.text):
                 page_title = ''
                 m_title = re.search(r'<title>(.*?)</title>', response.text or '', re.IGNORECASE | re.DOTALL)
                 if m_title:
                     page_title = m_title.group(1).strip().replace('\n', ' ')
-                print(f"关键字: {keyword} \t 命中百度安全验证/风控页面，title={page_title}，请降低频率/更换代理或改用浏览器方式抓取")
+                print(
+                    f"关键字: {keyword} \t 命中百度安全验证/风控页面，title={page_title}，将触发全局停止（避免继续无意义访问）。"
+                    f"\n建议：更换高质量代理/降低并发（max_workers=1）/降低翻页（max_page=1）/或改用浏览器方式抓取",
+                    flush=True,
+                )
+                if str(cfg.get('risk_control_action') or 'stop').lower() == 'stop':
+                    stop_event.set()
                 break
 
             # 第一步：先提取结果链接（仅保留 www.baidu.com/baidu.php?url=）
             candidate_links = extract_baidu_result_links(response.text)
-            # 只尝试前若干条，优先处理顶部结果
+
+            # 目标：每页最多拿到多少条“唯一广告”（按解析后的 imid 去重计数）
             limit = int(cfg.get('candidate_links_limit', 10) or 10)
-            candidate_links = candidate_links[: max(1, limit)]
+            limit = max(1, limit)
+
+            # 扫描上限：默认不设上限（无需手动配置）。
+            # 仅当用户在 config.yaml 里显式配置了 candidate_links_scan_limit 才会截断。
+            scan_limit_cfg = cfg.get('candidate_links_scan_limit', None)
+            scan_limit = None
+            if scan_limit_cfg is not None and str(scan_limit_cfg).strip() != '':
+                try:
+                    scan_limit = int(scan_limit_cfg)
+                except Exception:
+                    scan_limit = None
+            if scan_limit is not None:
+                scan_limit = max(limit, max(1, scan_limit))
+                candidate_links = candidate_links[:scan_limit]
+
+            # 早期去重：
+            # 不打开链接，先按 baidu.php?url= token 前缀做一次去重，避免同一广告重复几十次导致大量无意义 resolve。
+            if candidate_links:
+                prefix_len = cfg.get('candidate_fingerprint_prefix_len', 16)
+                seen_fp = set()
+                filtered = []
+                dropped = 0
+                for c in candidate_links:
+                    fp = baidu_candidate_fingerprint(c, prefix_len=prefix_len)
+                    if fp and fp in seen_fp:
+                        dropped += 1
+                        continue
+                    if fp:
+                        seen_fp.add(fp)
+                    filtered.append(c)
+                if dropped:
+                    print(f"关键字: {keyword} \t page={page} 早期指纹去重丢弃 {dropped} 条候选", flush=True)
+                candidate_links = filtered
 
             if not candidate_links:
                 # 兜底：直接从页面源码里抓取 ada 链接
@@ -364,7 +494,19 @@ def fetch(keyword, stop_event, cfg: dict):
                     r'https?://ada\.baidu\.com/site/[\w.-]+(?:/xyl)?\?[^"\s<>]*imid=[\w-]+',
                     response.text or '',
                 )
-                candidate_links = list(dict.fromkeys(direct_matches))[:10]
+                # 这里 direct_matches 已经是落地页，仍按 imid 去重后再取 limit
+                seen_direct_imids = set()
+                direct_unique = []
+                for u in list(dict.fromkeys(direct_matches)):
+                    nu = canonicalize_ada_url(u)
+                    imid = get_imid(nu)
+                    if not imid or imid in seen_direct_imids:
+                        continue
+                    seen_direct_imids.add(imid)
+                    direct_unique.append(nu)
+                    if len(direct_unique) >= limit:
+                        break
+                candidate_links = direct_unique
 
             if not candidate_links:
                 page_title = ''
@@ -374,9 +516,16 @@ def fetch(keyword, stop_event, cfg: dict):
                 print(f"关键字: {keyword} \t候选链接为空，title={page_title}")
                 continue
 
-            # 第二步：逐个解析真实落地页
+            # 第二步：逐个解析真实落地页（按 imid 去重；重复的不要占用 limit 配额）
+            seen_page_imids = set()
+            resolved_cache = {}
+
             for candidate in candidate_links:
                 if stop_event.is_set():
+                    break
+
+                # 如果已经凑够唯一广告数量，则停止继续解析
+                if len(seen_page_imids) >= limit:
                     break
 
                 # 解析每个候选之间也加一点随机延迟
@@ -386,16 +535,33 @@ def fetch(keyword, stop_event, cfg: dict):
                 if 'ada.baidu.com' in candidate and 'imid=' in candidate:
                     match_url = candidate
                 else:
-                    # 百度跳转链接需要打开后跟随跳转拿真实落地页
-                    match_url = resolve_baidu_link(candidate, stop_event, session=s)
+                    # 先查缓存，避免重复解析
+                    if candidate in resolved_cache:
+                        match_url = resolved_cache[candidate]
+                    else:
+                        match_url = resolve_baidu_link(
+                            candidate,
+                            stop_event,
+                            session=s,
+                            user_agent=ua,
+                            timeout=timeout,
+                        )
+                        resolved_cache[candidate] = match_url
 
                 if not match_url:
                     continue
 
                 normalized = canonicalize_ada_url(match_url)
                 imid = get_imid(normalized)
-                if imid:
-                    results.append(normalized)
+                if not imid:
+                    continue
+
+                # 同页内同一广告（同 imid）只算一次，不消耗 limit 配额
+                if imid in seen_page_imids:
+                    continue
+
+                seen_page_imids.add(imid)
+                results.append(normalized)
 
     except Exception as e:
         print('Exception - ' + str(e))
@@ -462,32 +628,49 @@ def scrape_ada():
         max_workers = int(cfg.get('max_workers', 1) or 1)
         max_workers = max(1, min(8, max_workers))
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            from functools import partial
+        # 关键：不要一次性提交所有 keyword（否则命中风控后，已提交的任务还会继续跑，表现为“还在傻傻访问”）
+        # 改为“滚动提交”：最多只保持 max_workers 个 in-flight 任务。
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        futures = {}  # future -> keyword
+        kw_iter = iter(pending_keywords)
 
-            fetch_runner = partial(fetch, stop_event=stop_event, cfg=cfg)
-            futures = [executor.submit(fetch_runner, keyword) for keyword in pending_keywords]
-
+        def _submit_next():
+            if stop_event.is_set():
+                return False
             try:
-                # 用 future->keyword 反查，方便断点续传落盘
-                future_to_kw = {fu: kw for fu, kw in zip(futures, pending_keywords)}
+                kw_ = next(kw_iter)
+            except StopIteration:
+                return False
+            futures[executor.submit(fetch, kw_, stop_event, cfg)] = kw_
+            return True
 
-                for future in as_completed(futures):
-                    # 非阻塞按键检测：按 q 请求停止
-                    if msvcrt is not None and msvcrt.kbhit():
-                        key = msvcrt.getwch()
-                        if str(key).lower() == 'q':
-                            stop_event.set()
+        try:
+            # 先提交一批
+            for _ in range(max_workers):
+                if not _submit_next():
+                    break
 
-                    if stop_event.is_set():
-                        break
+            while futures:
+                # 非阻塞按键检测：按 q 请求停止
+                if msvcrt is not None and msvcrt.kbhit():
+                    key = msvcrt.getwch()
+                    if str(key).lower() == 'q':
+                        stop_event.set()
 
-                    kw = future_to_kw.get(future) or ''
+                if stop_event.is_set():
+                    print('检测到全局停止信号，正在取消剩余任务...', flush=True)
+                    break
+
+                done, _ = wait(list(futures.keys()), return_when=FIRST_COMPLETED)
+                for future in done:
+                    kw = futures.pop(future, '') or ''
 
                     try:
                         result = future.result()
                     except Exception as e:
                         print(f"任务异常: kw={kw} err={e}", flush=True)
+                        # 异常也继续滚动提交
+                        _submit_next()
                         continue
 
                     # 只要任务完成（无论是否抓到新链接），都算该 keyword 已处理，用于断点续传
@@ -513,21 +696,29 @@ def scrape_ada():
                             existing_imids.add(imid)
 
                         if new_urls:
-                            print(f"kw={kw} 成功提取 {len(new_urls)} 条新url（重复 {dup_count} 条）: {'  '.join(new_urls)}", flush=True)
+                            print(f"关键字：{kw} 成功提取 {len(new_urls)} 条新url（重复 {dup_count} 条）: {'  '.join(new_urls)}", flush=True)
                             f.write('\n'.join(new_urls) + '\n')
                             f.flush()  # 确保及时写入
                         else:
-                            print(f"kw={kw} 抓取到 {len(result)} 条但全部重复（或无 imid），未写入", flush=True)
+                            print(f"关键字：{kw} 抓取到 {len(result)} 条但全部重复（或无 imid），未写入", flush=True)
                     else:
-                        print(f"kw={kw} 无新增", flush=True)
+                        print(f"关键字：{kw} 无新增", flush=True)
 
-            except KeyboardInterrupt:
-                print('\n检测到 Ctrl+C，正在停止抓取...')
-                stop_event.set()
-                for future in futures:
-                    future.cancel()
+                    # 继续滚动提交
+                    _submit_next()
+
+        except KeyboardInterrupt:
+            print('\n检测到 Ctrl+C，正在停止抓取...')
+            stop_event.set()
+            print('已请求停止，将保存当前已抓取结果并退出。')
+        finally:
+            # 取消未开始的任务；已在跑的任务无法立刻中断，但由于滚动提交，最多只有 max_workers 个在跑。
+            for future in list(futures.keys()):
+                future.cancel()
+            try:
                 executor.shutdown(wait=False, cancel_futures=True)
-                print('已请求停止，将保存当前已抓取结果并退出。')
+            except TypeError:
+                executor.shutdown(wait=False)
 
         # 最后再做一次全量去重和清理，保持文件整洁
         f.seek(0)

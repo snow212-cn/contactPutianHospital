@@ -154,21 +154,31 @@ dialogue_mode:
 # - 默认值在代码中内置；不写也能运行，写了则按此覆盖
 # - 支持写在本文件（config.yaml）里，也支持单独放到 catchad/config.yaml（优先级更高）
 catchad:
-  # 并发线程数（太大容易触发风控）
+  # 并发线程数（太大容易触发风控）。
   max_workers: 2
-  # 每个关键词抓取的搜索结果页数（pn=0,10,20...）
+  # 每个关键词抓取的搜索结果页数（pn=0,10,20...）。
   max_page: 1
-  # 每页最多解析多少条百度跳转链接（越大越慢，但命中率可能更高）
-  candidate_links_limit: 8
+  # 每页最多扫描多少条候选跳转链接：默认不设上限。只有“明确配置”了该值，会进行截断。
+  candidate_links_scan_limit: 30
+  # 每页要拿到多少条“唯一广告”（按解析后的 imid 去重计数）。
+  # 百度页面里大量看起来不同的 baidu.php?url= 实际打开是同一广告；这些重复项不再占用 candidate_links_limit 配额。
+  candidate_links_limit: 10
+  # 指纹策略：对 baidu.php?url= 的 token URLDecode 后取前几位作为指纹
+  candidate_fingerprint_prefix_len: 16
   # 每个关键词开始前的随机延迟区间（秒），用于降速
   delay_per_keyword_range: [2.0, 5.0]
   # 翻页之间的随机延迟区间（秒）
   delay_between_pages_range: [1.0, 3.0]
   # 解析每条候选跳转链接之间的随机延迟区间（秒）
   delay_between_resolves_range: [0.3, 1.2]
+  # requests 超时（connect, read）秒
+  request_timeout: [5, 10]
+  # 命中百度安全验证/风控页后的动作
+  # - stop: 触发全局停止，取消后续 keyword
+  risk_control_action: stop
   # 断点续传：是否启用“已完成关键词”记录
   resume_enabled: true
-  # 断点续传：已完成关键词记录 - 支持相对路径（相对项目目录）或绝对路径
+  # 已完成关键词记录 - 支持相对路径（相对项目目录）或绝对路径
   resume_file: 'catchad/done_keywords.txt'
   # 抓取结果写入的 api.txt 路径 - 支持相对路径或绝对路径
   api_file: 'api.txt'
