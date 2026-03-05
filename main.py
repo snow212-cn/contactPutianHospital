@@ -212,7 +212,7 @@ def generate_ai_message(config, full_context):
             json=payload,
             proxies={"http": "", "https": ""},
             # Ctrl+C 更容易生效；同时避免网络卡住时看起来“无法终止”
-            timeout=(5, 20)
+            timeout=(5, 45)
         )
         response.raise_for_status()
 
@@ -441,7 +441,7 @@ def iterate_api(file_path):
     total_len = len(remaining_urls)
     success_counter = Counter()
 
-    logger.info("运行中可在终端按 Ctrl+C 或按键 'q' 请求停止（通常在当前链接处理结束后生效）")
+    logger.info("运行中可在终端按 Ctrl+C 或按键 'q' 请求停止（通常在当前链接处理结束后生效）\n")
 
     # 断点续传策略：在开始处理某个 url 前就写入 visited_file，确保中断后不重复
     # 如果您希望“只有真正发送成功才算访问过”，可把写入逻辑移动到 process_tab 成功后。
