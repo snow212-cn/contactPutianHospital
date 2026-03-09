@@ -318,7 +318,9 @@ def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
 
         # 检测机构聊天界面上下文
         # 使用合并的CSS选择器，避免顺序查找导致的超时等待
-        context_element = tab.ele('css:div.pc-component-chatview-wrapper, div.component-chatview-wrapper', timeout=2)
+        time.sleep(1)
+        context_element = tab.ele('css:div.pc-component-chatview-wrapper, div.component-chatview-wrapper, ' \
+                                  'div.msg-area-container, div.gt-merchant-bot-welcome-area-root-container', timeout=3)
 
         context = ""
         if context_element:
@@ -331,11 +333,36 @@ def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
         # full_context = f"{tab_title}\n上下文：{context}" if context else tab_title
 
         # 合并输入框选择器
-        component_input = tab.ele('css:.imlp-component-newtypebox-textarea, .imlp-component-typebox-input', timeout=5)
+        component_input = tab.ele(
+            'css:.imlp-component-newtypebox-textarea, .imlp-component-typebox-input, '
+            'textarea.bot-pc-text-input-textarea',
+            timeout=10
+        )
+
+        # 兼容部分机构 H5 聊天页：先展示 fake-input，点击后才渲染真实 textarea
+        if not component_input:
+            fake_input = tab.ele('css:div.fake-input', timeout=2)
+            if fake_input:
+                try:
+                    fake_input.click()
+                except Exception as e:
+                    logger.warning('点击 fake-input 失败，尝试 JS 点击 | 标题:%s | url:%s | err:%s', tab_title, url, e)
+                    try:
+                        fake_input.run_js('this.click()')
+                    except Exception as e2:
+                        logger.warning('JS 点击 fake-input 也失败 | 标题:%s | url:%s | err:%s', tab_title, url, e2)
+
+                time.sleep(0.5)
+                component_input = tab.ele(
+                    'css:div.text-input textarea, textarea.bot-pc-text-input-textarea, textarea',
+                    timeout=3
+                )
 
         if not component_input:
             logger.info('跳过：未找到输入框 | 标题:%s | url:%s', tab_title, url)
             return
+            
+        component_input.clear()
 
         if ENABLE_TITLE_DEDUP and tab_title and success_counter[tab_title] > 0:
             logger.info('跳过：命中重复标题:%s | 已留言次数:%s | url:%s', tab_title, success_counter[tab_title], url)
@@ -351,25 +378,28 @@ def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
         component_input.input(template)
 
         # 合并发送按钮选择器
-        send = tab.ele('css:.imlp-component-newtypebox-send, .imlp-component-typebox-send-btn', timeout=5)
+        send = tab.ele(
+            'css:.imlp-component-newtypebox-send, .imlp-component-typebox-send-btn, '
+            'div.send-btn, div.icon.send-btn',
+            timeout=5
+        )
 
         if not send:
             logger.warning('未找到发送按钮，无法发送 | 标题:%s | url:%s', tab_title, url)
             return
-
+        return
         try:
             # 优先尝试普通点击，如果失败则回退
             send.click()
-            time.sleep(1)  # 等待发送完成
             sent_message = True
         except Exception as e:
             logger.warning(f"点击发送按钮失败，尝试JS点击: {e}")
             try:
                 send.run_js('this.click()')
-                time.sleep(1)  # 等待发送完成
                 sent_message = True
             except Exception as e2:
                 logger.error(f"JS点击也失败: {e2}")
+        time.sleep(2)  # 等待发送完成
 
     except Exception as e:
         logger.error(f"发生错误: {e}")
