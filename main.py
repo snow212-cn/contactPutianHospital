@@ -5,7 +5,6 @@ from urllib.parse import urlparse, parse_qs
 from fake_useragent import UserAgent
 from concurrent.futures import ThreadPoolExecutor
 from DrissionPage import ChromiumPage, ChromiumOptions
-from DrissionPage.common import Settings
 
 try:
     import msvcrt  # Windows: 用于无回车按键检测（按 q 退出）
@@ -29,7 +28,6 @@ logger = logging.getLogger(__name__)
 # 全局停止标记：用于 Ctrl+C / 自定义按键退出
 STOP_EVENT = threading.Event()
 
-
 def _handle_sigint(sig, frame):
     """在 Windows/VSCode 终端中接收 Ctrl+C（SIGINT）。
 
@@ -39,7 +37,6 @@ def _handle_sigint(sig, frame):
     """
     STOP_EVENT.set()
     raise KeyboardInterrupt
-
 
 try:
     signal.signal(signal.SIGINT, _handle_sigint)
@@ -52,16 +49,15 @@ with open('config.yaml', 'r', encoding='utf-8') as config_file:
     config = yaml.safe_load(config_file)
 
 # 关闭单例标签页对象模式
-Settings.set_singleton_tab_obj(False)
 
 # http://g1879.gitee.io/drissionpagedocs/ChromiumPage/browser_options/
 co = (ChromiumOptions()
-.no_imgs(config['browser']['chrome_options']['no_imgs'])  # 加载图片
-.headless(config['browser']['chrome_options']['headless'])  # 有界面模式
+.set_no_imgs(config['browser']['chrome_options']['no_imgs'])  # 加载图片
+.set_headless(config['browser']['chrome_options']['headless'])  # 有界面模式
 .auto_port(config['browser']['chrome_options']['auto_port'])  # 自动获取端口
 # .set_proxy("xxxxx")
 .set_user_agent(UserAgent().random)  # 随机UserAgent
-.set_browser_path(config['browser']['chrome_options']['browser_path']))  # 修正浏览器路径设置方法
+.set_paths(browser_path=config['browser']['chrome_options']['browser_path']))  # 修正浏览器路径设置方法
 
 BAIDU_URL = config['browser']['baidu_url']
 TEL_NUMBER = config['browser']['tel_number']  # 手机号码
@@ -79,7 +75,6 @@ ENABLE_LINK_DEDUP = DEDUP_CONFIG.get('enable_link_dedup', True)
 ENABLE_INSTITUTION_DEDUP = DEDUP_CONFIG.get('enable_institution_dedup', False)
 ENABLE_TITLE_DEDUP = DEDUP_CONFIG.get('enable_title_dedup', True)
 SHOW_DUPLICATE_EXAMPLES = max(0, int(DEDUP_CONFIG.get('show_duplicate_examples', 3)))
-
 
 def extract_institution_key(url: str) -> str:
     """
@@ -114,7 +109,6 @@ def extract_institution_key(url: str) -> str:
             first_segment = parts[0].lower()
 
     return f"{host}/{first_segment}" if first_segment else host
-
 
 def prepare_target_urls(raw_urls):
     """
@@ -172,7 +166,6 @@ def prepare_target_urls(raw_urls):
         logger.info("去重示例：%s", example)
 
     return final_urls
-
 
 def generate_ai_message(config, full_context):
     """
@@ -310,8 +303,9 @@ def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
         # tid = page.new_tab(url)
         # tab = page.get_tab(tid)
         url = url.strip()
-        tab = page.new_tab(url)
-        tab.wait.load_start(timeout=5, raise_err=False)
+        tid = page.new_tab(url)
+        tab = page.get_tab(tid)
+        tab.wait.load_start(timeout=5)
         if STOP_EVENT.is_set():
             return
         tab_title = tab.title
@@ -376,6 +370,7 @@ def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
             return
 
         component_input.input(template)
+        component_input.input('\n')  # 按Enter发送消息
 
         # 合并发送按钮选择器
         send = tab.ele(
@@ -387,7 +382,6 @@ def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
         if not send:
             logger.warning('未找到发送按钮，无法发送 | 标题:%s | url:%s', tab_title, url)
             return
-        return
         try:
             # 优先尝试普通点击，如果失败则回退
             send.click()
@@ -424,17 +418,17 @@ def iterate_api(file_path):
 
     # 尝试接管已启动的浏览器（端口9222），若失败则启动新浏览器实例
     try:
-        page = ChromiumPage(addr_or_opts='127.0.0.1:9222')
+        page = ChromiumPage(addr_driver_opts='127.0.0.1:9222')
         # 简单验证连接状态（获取当前URL或标题，若未连接成功通常会抛出异常）
         _ = page.title
         logger.info("成功接管已启动的浏览器 (127.0.0.1:9222)")
     except Exception as e:
         logger.info(f"未检测到已启动的浏览器 (127.0.0.1:9222)，正在启动新实例... ({e})")
-        page = ChromiumPage(addr_or_opts=co)
+        page = ChromiumPage(addr_driver_opts=co)
 
     try:
         page.get(BAIDU_URL)
-        page.wait.load_start(timeout=5, raise_err=False)
+        page.wait.load_start(timeout=5)
         with open(file_path, 'r', encoding='utf-8') as file:
             raw_urls = file.readlines()
     except KeyboardInterrupt:
@@ -503,7 +497,6 @@ def iterate_api(file_path):
         STOP_EVENT.set()
         logger.info("检测到中断（Ctrl+C），已保存进度")
         raise  # 重新抛出异常以便外层捕获
-
 
 if __name__ == '__main__':
     if TEL_NUMBER.isdigit():
