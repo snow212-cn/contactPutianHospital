@@ -377,6 +377,7 @@ def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
             return
 
         component_input.input(template)
+        component_input.input('\n')  # 按Enter发送消息
 
         # 合并发送按钮选择器
         send = tab.ele(
