@@ -18,7 +18,7 @@ for /f "tokens=2" %%v in ('python --version 2^>^&1') do echo [OK] Python %%v
 
 echo.
 echo [INFO] Installing dependencies...
-pip install -r requirements.txt -q
+python -m pip install -r requirements.txt -q
 if errorlevel 1 (
     echo [ERROR] Failed to install dependencies
     pause
