@@ -5,7 +5,6 @@ from urllib.parse import urlparse, parse_qs
 from fake_useragent import UserAgent
 from concurrent.futures import ThreadPoolExecutor
 from DrissionPage import ChromiumPage, ChromiumOptions
-from DrissionPage.common import Settings
 
 try:
     import msvcrt  # Windows: 用于无回车按键检测（按 q 退出）
@@ -29,7 +28,6 @@ logger = logging.getLogger(__name__)
 # 全局停止标记：用于 Ctrl+C / 自定义按键退出
 STOP_EVENT = threading.Event()
 
-
 def _handle_sigint(sig, frame):
     """在 Windows/VSCode 终端中接收 Ctrl+C（SIGINT）。
 
@@ -39,7 +37,6 @@ def _handle_sigint(sig, frame):
     """
     STOP_EVENT.set()
     raise KeyboardInterrupt
-
 
 try:
     signal.signal(signal.SIGINT, _handle_sigint)
@@ -52,7 +49,6 @@ with open('config.yaml', 'r', encoding='utf-8') as config_file:
     config = yaml.safe_load(config_file)
 
 # 关闭单例标签页对象模式
-Settings.set_singleton_tab_obj(False)
 
 # http://g1879.gitee.io/drissionpagedocs/ChromiumPage/browser_options/
 co = (ChromiumOptions()
@@ -79,7 +75,6 @@ ENABLE_LINK_DEDUP = DEDUP_CONFIG.get('enable_link_dedup', True)
 ENABLE_INSTITUTION_DEDUP = DEDUP_CONFIG.get('enable_institution_dedup', False)
 ENABLE_TITLE_DEDUP = DEDUP_CONFIG.get('enable_title_dedup', True)
 SHOW_DUPLICATE_EXAMPLES = max(0, int(DEDUP_CONFIG.get('show_duplicate_examples', 3)))
-
 
 def extract_institution_key(url: str) -> str:
     """
@@ -114,7 +109,6 @@ def extract_institution_key(url: str) -> str:
             first_segment = parts[0].lower()
 
     return f"{host}/{first_segment}" if first_segment else host
-
 
 def prepare_target_urls(raw_urls):
     """
@@ -172,7 +166,6 @@ def prepare_target_urls(raw_urls):
         logger.info("去重示例：%s", example)
 
     return final_urls
-
 
 def generate_ai_message(config, full_context):
     """
@@ -504,7 +497,6 @@ def iterate_api(file_path):
         STOP_EVENT.set()
         logger.info("检测到中断（Ctrl+C），已保存进度")
         raise  # 重新抛出异常以便外层捕获
-
 
 if __name__ == '__main__':
     if TEL_NUMBER.isdigit():
