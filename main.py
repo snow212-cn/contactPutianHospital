@@ -56,12 +56,12 @@ Settings.set_singleton_tab_obj(False)
 
 # http://g1879.gitee.io/drissionpagedocs/ChromiumPage/browser_options/
 co = (ChromiumOptions()
-.no_imgs(config['browser']['chrome_options']['no_imgs'])  # 加载图片
-.headless(config['browser']['chrome_options']['headless'])  # 有界面模式
+.set_no_imgs(config['browser']['chrome_options']['no_imgs'])  # 加载图片
+.set_headless(config['browser']['chrome_options']['headless'])  # 有界面模式
 .auto_port(config['browser']['chrome_options']['auto_port'])  # 自动获取端口
 # .set_proxy("xxxxx")
 .set_user_agent(UserAgent().random)  # 随机UserAgent
-.set_browser_path(config['browser']['chrome_options']['browser_path']))  # 修正浏览器路径设置方法
+.set_paths(browser_path=config['browser']['chrome_options']['browser_path']))  # 修正浏览器路径设置方法
 
 BAIDU_URL = config['browser']['baidu_url']
 TEL_NUMBER = config['browser']['tel_number']  # 手机号码
@@ -310,8 +310,9 @@ def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
         # tid = page.new_tab(url)
         # tab = page.get_tab(tid)
         url = url.strip()
-        tab = page.new_tab(url)
-        tab.wait.load_start(timeout=5, raise_err=False)
+        tid = page.new_tab(url)
+        tab = page.get_tab(tid)
+        tab.wait.load_start(timeout=5)
         if STOP_EVENT.is_set():
             return
         tab_title = tab.title
@@ -424,17 +425,17 @@ def iterate_api(file_path):
 
     # 尝试接管已启动的浏览器（端口9222），若失败则启动新浏览器实例
     try:
-        page = ChromiumPage(addr_or_opts='127.0.0.1:9222')
+        page = ChromiumPage(addr_driver_opts='127.0.0.1:9222')
         # 简单验证连接状态（获取当前URL或标题，若未连接成功通常会抛出异常）
         _ = page.title
         logger.info("成功接管已启动的浏览器 (127.0.0.1:9222)")
     except Exception as e:
         logger.info(f"未检测到已启动的浏览器 (127.0.0.1:9222)，正在启动新实例... ({e})")
-        page = ChromiumPage(addr_or_opts=co)
+        page = ChromiumPage(addr_driver_opts=co)
 
     try:
         page.get(BAIDU_URL)
-        page.wait.load_start(timeout=5, raise_err=False)
+        page.wait.load_start(timeout=5)
         with open(file_path, 'r', encoding='utf-8') as file:
             raw_urls = file.readlines()
     except KeyboardInterrupt:
