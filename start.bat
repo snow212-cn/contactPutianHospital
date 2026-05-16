@@ -38,9 +38,9 @@ echo [OK] config.yaml found
 
 echo.
 echo Select mode:
-echo   [1] Main - auto consultation (main.py)
-echo   [2] Catch - collect ad URLs (catchad)
-echo   [3] Scheduler - daily auto run (scheduler)
+echo   [1] ??? - ??????????? (main.py)
+echo   [2] ??? - ????????URL (catchad)
+echo   [3] ??? - ??09:00???? (scheduler)
 echo.
 
 :choose
