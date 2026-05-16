@@ -388,7 +388,6 @@ def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
         if not send:
             logger.warning('未找到发送按钮，无法发送 | 标题:%s | url:%s', tab_title, url)
             return
-        return
         try:
             # 优先尝试普通点击，如果失败则回退
             send.click()
