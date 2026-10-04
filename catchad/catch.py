@@ -451,6 +451,7 @@ def fetch(keyword, stop_event, cfg: dict):
 
             # 第一步：先提取结果链接（仅保留 www.baidu.com/baidu.php?url=）
             candidate_links = extract_baidu_result_links(response.text)
+            filter_links = candidate_links
 
             # 目标：每页最多拿到多少条“唯一广告”（按解析后的 imid 去重计数）
             limit = int(cfg.get('candidate_links_limit', 10) or 10)
@@ -486,9 +487,9 @@ def fetch(keyword, stop_event, cfg: dict):
                     filtered.append(c)
                 if dropped:
                     print(f"关键字: {keyword} \t page={page} 早期指纹去重丢弃 {dropped} 条候选", flush=True)
-                candidate_links = filtered
+                filter_links = filtered
 
-            if not candidate_links:
+            if not filter_links:
                 # 兜底：直接从页面源码里抓取 ada 链接
                 direct_matches = re.findall(
                     r'https?://ada\.baidu\.com/site/[\w.-]+(?:/xyl)?\?[^"\s<>]*imid=[\w-]+',
@@ -506,9 +507,9 @@ def fetch(keyword, stop_event, cfg: dict):
                     direct_unique.append(nu)
                     if len(direct_unique) >= limit:
                         break
-                candidate_links = direct_unique
+                filter_links = direct_unique
 
-            if not candidate_links:
+            if not filter_links:
                 page_title = ''
                 m_title = re.search(r'<title>(.*?)</title>', response.text or '', re.IGNORECASE | re.DOTALL)
                 if m_title:
@@ -520,7 +521,7 @@ def fetch(keyword, stop_event, cfg: dict):
             seen_page_imids = set()
             resolved_cache = {}
 
-            for candidate in candidate_links:
+            for candidate in filter_links:
                 if stop_event.is_set():
                     break
 
