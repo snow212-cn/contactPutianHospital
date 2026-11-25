@@ -167,6 +167,19 @@ def prepare_target_urls(raw_urls):
 
     return final_urls
 
+def is_ai_refusal_response(message):
+    """识别模型拒绝/安全说明，避免把拒绝文本当作用户消息。"""
+    text = (message or '').strip()
+    if not text:
+        return False
+    patterns = (
+        r'^(?:抱歉[，,。！! ]*)?(?:我)?(?:不能|无法|不可以|拒绝)(?:直接)?(?:帮助|协助|生成|提供|满足|执行)',
+        r'^(?:I\\s+)?(?:cannot|can\'t|won\'t)\\s+(?:help|assist|generate|provide)',
+        r'^作为(?:一个)?AI(?:助手)?[，,:：]',
+    )
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+
 def generate_ai_message(config, full_context):
     """
     使用自定义 AI API 生成对话消息
@@ -189,10 +202,16 @@ def generate_ai_message(config, full_context):
             hospital_name=hospital_name,
             chat_context=context_str
         )
+        # 某些 OpenAI 兼容网关不接受布尔值形式的 reasoning 参数。
+        request_params = dict(ai_config.get('request_params') or {})
+        if 'reasoning' in request_params:
+            logger.warning("已忽略不兼容的 request_params.reasoning 配置项")
+            request_params.pop('reasoning', None)
+
         payload = {
             "model": ai_config['model'],
             "messages": [{"role": "user", "content": content}],
-            **ai_config['request_params']
+            **request_params
         }
 
         # 发送 API 请求（增加连接与读取超时，避免长时间阻塞）
@@ -250,6 +269,11 @@ def generate_ai_message(config, full_context):
             if len(generated_message) < 10:
                 raise ValueError("AI 响应长度截止且内容过短，判定为不完整")
 
+        if is_ai_refusal_response(generated_message):
+            logger.warning("AI 返回拒绝/安全说明，已拦截，不会作为咨询消息使用")
+            logger.debug("被拦截的 AI 回复：%s", generated_message)
+            return None
+
         return generated_message
 
     except requests.exceptions.Timeout as e:
@@ -272,19 +296,26 @@ def generate_message(config, full_context):
     :param context: 含机构标题和可能的上下文信息
     :return: 生成的消息字符串
     """
-    dialogue_mode = config['dialogue_mode']['mode']
-    if dialogue_mode == 'ai' or (dialogue_mode == 'hybrid' and random.random() < 0.5):
-        ai_message = generate_ai_message(config, full_context)
-        if ai_message: return ai_message
-    # 默认或降级到模板模式
-    title = random.choice(titles)            # 随机选择一条打招呼用语模板
-    relative = random.choice(relatives)
-    situation = random.choice(situations)
-    contact_method_template = random.choice(contact_methods)
-    contact_method = contact_method_template.replace("{number}", TEL_NUMBER) # 替换模板中的 {number} 为实际的电话号码 TEL_NUMBER
-    greeting = random.choice(greetings)            # 随机选择一个打招呼方式
-    
-    return f"{greeting}{title}，{relative}{TEL_NAME}{situation}，{contact_method}。"
+    dialogue_config = config.get('dialogue_mode', {})
+    dialogue_mode = dialogue_config.get('mode', 'ai')
+
+    # AI 模式下，接口失败或模型拒绝时直接停止，不回退到旧模板。
+    if dialogue_mode == 'ai':
+        return generate_ai_message(config, full_context)
+
+    if dialogue_mode == 'hybrid' and random.random() < 0.5:
+        return generate_ai_message(config, full_context)
+
+    # 模板模式使用中性表述，不编造病情、亲属关系或紧急情况。
+    hospital_name = (full_context.get('title') or '').strip()
+    institution = f"关于贵机构（{hospital_name}）" if hospital_name else "关于贵机构"
+    contact_name = TEL_NAME.strip() if isinstance(TEL_NAME, str) else ''
+    name_part = f"联系人：{contact_name}；" if contact_name else ""
+    return (
+        f"您好，{institution}的相关服务/就诊安排想咨询一下。"
+        f"{name_part}联系电话：{TEL_NUMBER}。"
+        "如方便，请通过电话联系；也可以直接在此回复。"
+    )"
 
 def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
     """
@@ -323,6 +354,24 @@ def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
         logger.debug(context)
         # 将上下文信息整合
         full_context = {'title': tab_title, 'context': context}
+
+        dialogue_config = config.get('dialogue_mode', {})
+        if dialogue_config.get('debug_mode', False):
+            start_gen_time = time.time()
+            preview_message = generate_message(config, full_context)
+            elapsed = time.time() - start_gen_time
+            if preview_message:
+                logger.info(
+                    "[AI 调试模式] 仅预览，不会填写网页或发送消息 | 标题:%s | 耗时:%.2fs",
+                    tab_title, elapsed
+                )
+                print(f"\\n===== AI 调试预览：{tab_title} =====\\n{preview_message}\\n")
+            else:
+                logger.warning(
+                    "[AI 调试模式] 未生成可用消息（接口失败或回复被拦截），本页面不发送 | 标题:%s",
+                    tab_title
+                )
+            return
         # full_context = f"{tab_title}\n上下文：{context}" if context else tab_title
 
         # 合并输入框选择器
@@ -485,12 +534,16 @@ def iterate_api(file_path):
                 if not url:
                     continue
 
-                if url not in visited_urls:
+                debug_mode = bool(config.get('dialogue_mode', {}).get('debug_mode', False))
+                if not debug_mode and url not in visited_urls:
                     vf.write(url + '\n')
                     vf.flush()
                     visited_urls.add(url)
 
                 process_tab(page, url, success_counter, total_len)
+                if debug_mode:
+                    # 调试模式默认只检查一个页面，避免误触发大量 API 请求。
+                    break
 
     except KeyboardInterrupt:
         STOP_EVENT.set()
