@@ -174,7 +174,7 @@ def is_ai_refusal_response(message):
         return False
     patterns = (
         r'^(?:抱歉[，,。！! ]*)?(?:我)?(?:不能|无法|不可以|拒绝)(?:直接)?(?:帮助|协助|生成|提供|满足|执行)',
-        r'^(?:I\\s+)?(?:cannot|can\'t|won\'t)\\s+(?:help|assist|generate|provide)',
+        r'^(?:I\s+)?(?:cannot|can\'t|won\'t)\s+(?:help|assist|generate|provide)',
         r'^作为(?:一个)?AI(?:助手)?[，,:：]',
     )
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
@@ -365,7 +365,7 @@ def process_tab(page:ChromiumPage, url:str, success_counter:Counter, total_len):
                     "[AI 调试模式] 仅预览，不会填写网页或发送消息 | 标题:%s | 耗时:%.2fs",
                     tab_title, elapsed
                 )
-                print(f"\\n===== AI 调试预览：{tab_title} =====\\n{preview_message}\\n")
+                print(f"\n===== AI 调试预览：{tab_title} =====\n{preview_message}\n")
             else:
                 logger.warning(
                     "[AI 调试模式] 未生成可用消息（接口失败或回复被拦截），本页面不发送 | 标题:%s",
